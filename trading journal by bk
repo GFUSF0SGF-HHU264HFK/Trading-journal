@@ -1,0 +1,109 @@
+//+------------------------------------------------------------------+
+//| TradingJournalEA.mq5                                             |
+//| Logs closed MT5 deals to CSV; it does not place trades.          |
+//+------------------------------------------------------------------+
+#property strict
+#property version "1.00"
+#property description "Logs closed deals to TradingJournal.csv in MT5 Common Files."
+
+input string InpCsvFileName = "TradingJournal.csv";
+
+string DirectionFromDealType(const long deal_type)
+{
+   if(deal_type == DEAL_TYPE_BUY) return "BUY";
+   if(deal_type == DEAL_TYPE_SELL) return "SELL";
+   return "UNKNOWN";
+}
+
+bool FindEntryDeal(const long position_id, double &entry_price, string &direction)
+{
+   entry_price = 0.0;
+   direction = "UNKNOWN";
+   if(!HistorySelectByPosition((ulong)position_id)) return false;
+
+   for(int i = 0; i < HistoryDealsTotal(); i++)
+   {
+      ulong ticket = HistoryDealGetTicket(i);
+      if(ticket == 0) continue;
+
+      long entry_type = HistoryDealGetInteger(ticket, DEAL_ENTRY);
+      if(entry_type == DEAL_ENTRY_IN || entry_type == DEAL_ENTRY_INOUT)
+      {
+         long deal_type = HistoryDealGetInteger(ticket, DEAL_TYPE);
+         if(deal_type == DEAL_TYPE_BUY || deal_type == DEAL_TYPE_SELL)
+         {
+            entry_price = HistoryDealGetDouble(ticket, DEAL_PRICE);
+            direction = DirectionFromDealType(deal_type);
+            return true;
+         }
+      }
+   }
+   return false;
+}
+
+void WriteClosedDeal(const ulong deal_ticket)
+{
+   if(!HistoryDealSelect(deal_ticket)) return;
+
+   long entry_type = HistoryDealGetInteger(deal_ticket, DEAL_ENTRY);
+   if(entry_type != DEAL_ENTRY_OUT &&
+      entry_type != DEAL_ENTRY_OUT_BY &&
+      entry_type != DEAL_ENTRY_INOUT) return;
+
+   long position_id = HistoryDealGetInteger(deal_ticket, DEAL_POSITION_ID);
+   string symbol = HistoryDealGetString(deal_ticket, DEAL_SYMBOL);
+   datetime close_time = (datetime)HistoryDealGetInteger(deal_ticket, DEAL_TIME);
+   double exit_price = HistoryDealGetDouble(deal_ticket, DEAL_PRICE);
+   double volume = HistoryDealGetDouble(deal_ticket, DEAL_VOLUME);
+   double profit = HistoryDealGetDouble(deal_ticket, DEAL_PROFIT);
+   double commission = HistoryDealGetDouble(deal_ticket, DEAL_COMMISSION);
+   double swap = HistoryDealGetDouble(deal_ticket, DEAL_SWAP);
+   long magic = HistoryDealGetInteger(deal_ticket, DEAL_MAGIC);
+   string comment = HistoryDealGetString(deal_ticket, DEAL_COMMENT);
+
+   double entry_price = 0.0;
+   string direction = "UNKNOWN";
+   FindEntryDeal(position_id, entry_price, direction);
+
+   int file = FileOpen(InpCsvFileName,
+                       FILE_READ | FILE_WRITE | FILE_CSV | FILE_COMMON |
+                       FILE_SHARE_READ | FILE_SHARE_WRITE, ',');
+   if(file == INVALID_HANDLE)
+   {
+      Print("Trading Journal: CSV open failed. Error ", GetLastError());
+      return;
+   }
+
+   if(FileSize(file) == 0)
+      FileWrite(file, "close_time", "symbol", "direction", "volume",
+                "entry_price", "exit_price", "profit", "commission", "swap",
+                "position_id", "magic", "comment", "setup_notes");
+
+   FileSeek(file, 0, SEEK_END);
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   FileWrite(file,
+             TimeToString(close_time, TIME_DATE | TIME_SECONDS),
+             symbol, direction, DoubleToString(volume, 2),
+             DoubleToString(entry_price, digits),
+             DoubleToString(exit_price, digits),
+             DoubleToString(profit, 2), DoubleToString(commission, 2),
+             DoubleToString(swap, 2), (string)position_id,
+             (string)magic, comment, "");
+   FileClose(file);
+   Print("Trading Journal: logged deal ", deal_ticket, " on ", symbol);
+}
+
+void OnTradeTransaction(const MqlTradeTransaction &trans,
+                        const MqlTradeRequest &request,
+                        const MqlTradeResult &result)
+{
+   if(trans.type == TRADE_TRANSACTION_DEAL_ADD && trans.deal > 0)
+      WriteClosedDeal(trans.deal);
+}
+
+int OnInit()
+{
+   Print("Trading Journal EA ready. CSV: ", InpCsvFileName,
+         " in MT5 Common Files. This EA does not place trades.");
+   return INIT_SUCCEEDED;
+}
